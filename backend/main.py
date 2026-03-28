@@ -1,7 +1,12 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from database import init_db
 
 app = FastAPI(title="SummarEye AI API")
+
+@app.on_event("startup")
+def on_startup():
+    init_db()
 
 # Configure CORS for frontend access
 app.add_middleware(
