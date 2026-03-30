@@ -1,16 +1,21 @@
 # Dependencies
 node_modules
 __pycache__
+*.pyc
 venv/
 env/
 .env
+.aipd/
 
-# Models
+# Models & Databases
 *.pt
+*.onnx
+*.db
 
-# Uploads and Processed files
-/backend/uploads/*
-/backend/processed/*
+# Uploads, Processed, Debug files
+/backend/uploads/
+/backend/processed/
+/backend/debug_frames/
 !/backend/uploads/.gitkeep
 !/backend/processed/.gitkeep
 

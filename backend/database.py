@@ -5,7 +5,7 @@ from sqlalchemy.orm import sessionmaker, declarative_base, relationship
 from sqlalchemy import event
 
 # Connect to local SQLite file
-DATABASE_URL = "sqlite:///./SummarEye.db"
+DATABASE_URL = "sqlite:///./sightline.db"
 
 engine = create_engine(
     DATABASE_URL, connect_args={"check_same_thread": False}

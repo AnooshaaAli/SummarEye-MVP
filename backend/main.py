@@ -1,8 +1,9 @@
-from fastapi import FastAPI, File, UploadFile, Depends
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, File, UploadFile, Depends, BackgroundTasks
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from database import init_db, get_db, Video
+from database import init_db, get_db, Video, Event
 from sqlalchemy.orm import Session
+from detection import start_video_processing
 import os
 import uuid
 import aiofiles
@@ -100,3 +101,39 @@ def list_videos(db: Session = Depends(get_db)):
             "event_count": v.event_count
         } for v in videos
     ]
+
+@app.post("/api/analyse/{id}")
+def analyse_video(id: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    video = db.query(Video).filter(Video.id == id).first()
+    if not video:
+        return JSONResponse(status_code=404, content={"error": "Video not found", "code": "NOT_FOUND"})
+    
+    if video.status in ["processing", "done"]:
+        return JSONResponse(status_code=400, content={"error": "Video already processed or processing", "code": "INVALID_STATE"})
+    
+    background_tasks.add_task(start_video_processing, id)
+    return {"message": "Analysis started"}
+
+@app.get("/api/videos/{id}/events")
+def get_video_events(id: str, db: Session = Depends(get_db)):
+    events = db.query(Event).filter(Event.video_id == id).order_by(Event.start_time.asc()).all()
+    return events
+
+@app.get("/api/videos/{id}/alerts")
+def get_video_alerts(id: str, db: Session = Depends(get_db)):
+    events = db.query(Event).filter(Event.video_id == id, Event.flagged == True).order_by(Event.start_time.asc()).all()
+    return events
+
+@app.get("/api/clips/{event_id}")
+def get_event_clip(event_id: str, db: Session = Depends(get_db)):
+    event = db.query(Event).filter(Event.id == event_id).first()
+    if not event or not event.clip_path or not os.path.exists(event.clip_path):
+        return JSONResponse(status_code=404, content={"error": "Clip not found", "code": "NOT_FOUND"})
+    return FileResponse(event.clip_path, media_type="video/mp4")
+
+@app.get("/api/thumbnails/{event_id}")
+def get_event_thumbnail(event_id: str, db: Session = Depends(get_db)):
+    event = db.query(Event).filter(Event.id == event_id).first()
+    if not event or not event.thumbnail or not os.path.exists(event.thumbnail):
+        return JSONResponse(status_code=404, content={"error": "Thumbnail not found", "code": "NOT_FOUND"})
+    return FileResponse(event.thumbnail, media_type="image/jpeg")
