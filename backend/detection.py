@@ -26,11 +26,8 @@ def process_video(video_id: str, db: Session):
     db.commit()
 
     try:
-        # Load standard model (persons, dogs, etc.)
+        # Load standard model (persons only for MVP)
         model_std = YOLO('yolov8n.pt')
-        
-        # Load custom weapons model (path relative to backend folder)
-        model_wpn = YOLO('../models/All_weapon.pt')
         
         # Open video file
         cap = cv2.VideoCapture(video.filepath)
@@ -64,46 +61,29 @@ def process_video(video_id: str, db: Session):
             
             timestamp_s = frame_idx / fps
             
-            # Predict on both models
+            # Predict on standard model
             res_std = model_std(frame, verbose=False)
-            res_wpn = model_wpn(frame, verbose=False)
             
             detected = False
             conf_sum = 0
             count = 0
-            labels_found = set()
             
-            # Check standard COCO model (Class 0=Person, 16=Dog, etc.)
+            # Check standard COCO model (Class 0=Person only)
             for box in res_std[0].boxes:
                 cls_id = int(box.cls[0])
-                if cls_id in [0, 16] and float(box.conf[0]) >= 0.5:
+                if cls_id == 0 and float(box.conf[0]) >= 0.5:
                     detected = True
                     conf_sum += float(box.conf[0])
                     count += 1
-                    labels_found.add(model_std.names[cls_id])
-            
-            # Check Weapons model
-            for box in res_wpn[0].boxes:
-                if float(box.conf[0]) >= 0.5:
-                    detected = True
-                    conf_sum += float(box.conf[0])
-                    count += 1
-                    cls_id = int(box.cls[0])
-                    # Guard in case custom model names don't load nicely
-                    w_label = model_wpn.names.get(cls_id, "weapon")
-                    labels_found.add(w_label)
             
             if detected:
                 avg_conf = conf_sum / count
-                # Join multiple labels into one string, e.g. "person, dog"
-                frame_label = ", ".join(labels_found)
                 
                 if current_event is None:
                     current_event = {
                         "start_time": timestamp_s,
                         "end_time": timestamp_s,
-                        "confidences": [avg_conf],
-                        "labels": labels_found.copy()
+                        "confidences": [avg_conf]
                     }
                 else:
                     # Merge if within 60 seconds
@@ -112,13 +92,11 @@ def process_video(video_id: str, db: Session):
                         current_event = {
                             "start_time": timestamp_s,
                             "end_time": timestamp_s,
-                            "confidences": [avg_conf],
-                            "labels": labels_found.copy()
+                            "confidences": [avg_conf]
                         }
                     else:
                         current_event["end_time"] = timestamp_s
                         current_event["confidences"].append(avg_conf)
-                        current_event["labels"].update(labels_found)
             
             frame_idx += frame_interval
             
@@ -139,16 +117,12 @@ def process_video(video_id: str, db: Session):
             duration = end_s - start_s
             avg_conf = sum(e["confidences"]) / len(e["confidences"])
             
-            # Determine label logic based on everything seen in the event window
-            all_labels = list(e["labels"])
+            # Label logic based on duration
             is_loitering = duration >= 900
             
-            # Form final label name. Example: "loitering (person, dog)"
-            base_label = ", ".join(all_labels) + ("_detected" if not is_loitering else "")
-            label = f"loitering ({', '.join(all_labels)})" if is_loitering else base_label
-            
-            # Loitering logic requires alerting
-            is_flagged = is_loitering or any(lbl != "person" and lbl != "dog" for lbl in all_labels)
+            label = "loitering" if is_loitering else "person_detected"
+            is_flagged = is_loitering
+            flag_reason = "Person present for over 15 minutes" if is_loitering else None
             
             # Paths
             clip_name = f"{event_id}.mp4"
@@ -164,7 +138,7 @@ def process_video(video_id: str, db: Session):
             # Setup standard writer
             frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            fourcc = cv2.VideoWriter_fourcc(*'avc1')
             
             # To avoid saving empty files, setup writer and start collecting loop
             out = cv2.VideoWriter(clip_path, fourcc, fps, (frame_width, frame_height))
@@ -205,7 +179,8 @@ def process_video(video_id: str, db: Session):
                 confidence=avg_conf,
                 clip_path=clip_path,
                 thumbnail=thumb_path if thumbnail_saved else None,
-                flagged=is_flagged
+                flagged=is_flagged,
+                flag_reason=flag_reason
             )
             # if duration_s is auto computed by hook we can omit it, 
             # or just leave it out to let the DB compute it.
