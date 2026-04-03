@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 
 export default function UploadPage() {
   const [file, setFile] = useState(null);
@@ -84,7 +84,12 @@ export default function UploadPage() {
       // Success
       navigate(`/dashboard?video_id=${data.video_id}`);
     } catch (err) {
-      setError(err.message);
+      // Detect network error (backend unreachable) vs other errors
+      if (err instanceof TypeError && err.message === 'Failed to fetch') {
+        setError('Cannot connect to server. Make sure the app is running.');
+      } else {
+        setError(err.message || 'An unexpected error occurred.');
+      }
     } finally {
       setIsUploading(false);
     }
@@ -100,7 +105,7 @@ export default function UploadPage() {
           Upload a local video file for AI event analysis.
         </p>
 
-        <div 
+        <div
           className={`flex flex-col items-center justify-center w-full h-64 border-2 border-dashed rounded-lg cursor-pointer transition-all duration-300 ${isDragging ? 'border-indigo-500 bg-slate-700' : 'border-slate-600 bg-slate-800 hover:bg-slate-700/50 hover:border-indigo-400'}`}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
@@ -117,11 +122,11 @@ export default function UploadPage() {
             <p className="text-sm text-slate-500">or click to browse</p>
             <p className="text-xs text-slate-500 mt-2">MP4, AVI, or MOV (max 500MB)</p>
           </div>
-          <input 
-            type="file" 
-            className="hidden" 
-            accept=".mp4,.avi,.mov,video/mp4,video/avi,video/quicktime,video/x-msvideo" 
-            onChange={handleFileChange} 
+          <input
+            type="file"
+            className="hidden"
+            accept=".mp4,.avi,.mov,video/mp4,video/avi,video/quicktime,video/x-msvideo"
+            onChange={handleFileChange}
             ref={fileInputRef}
           />
         </div>
@@ -137,8 +142,8 @@ export default function UploadPage() {
             <div className="text-slate-300 text-sm bg-slate-700/50 px-4 py-2 rounded-md border border-slate-600">
               File selected: <span className="font-semibold text-white">{file.name}</span> ({(file.size / (1024 * 1024)).toFixed(2)} MB)
             </div>
-            
-            <button 
+
+            <button
               onClick={handleUpload}
               className="mt-2 flex items-center gap-2 px-8 py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold rounded-lg shadow-md transition-all duration-200"
             >
@@ -148,8 +153,8 @@ export default function UploadPage() {
         )}
 
         {isUploading && (
-           <div className="mt-6 flex justify-center">
-            <button 
+          <div className="mt-6 flex justify-center">
+            <button
               disabled={true}
               className="mt-2 flex items-center gap-2 px-8 py-3 bg-indigo-800 text-indigo-300 font-semibold rounded-lg shadow-md cursor-not-allowed transition-all duration-200"
             >
@@ -159,8 +164,17 @@ export default function UploadPage() {
               </svg>
               Uploading...
             </button>
-           </div>
+          </div>
         )}
+
+        <div className="mt-10 pt-6 border-t border-slate-700/50">
+          <Link to="/dashboard" className="text-slate-400 hover:text-indigo-400 transition-colors text-sm font-medium flex items-center justify-center gap-2">
+            Go to your Dashboard View
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7"></path>
+            </svg>
+          </Link>
+        </div>
 
       </div>
     </div>

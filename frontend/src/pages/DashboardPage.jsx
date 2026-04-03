@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
 
 export default function DashboardPage() {
@@ -10,11 +10,13 @@ export default function DashboardPage() {
   const [selectedVideo, setSelectedVideo] = useState(null);
   const [events, setEvents] = useState([]);
   const [alerts, setAlerts] = useState([]);
-  
+
   const [isInitialLoad, setIsInitialLoad] = useState(true);
   const [toast, setToast] = useState(null);
   const [modalEvent, setModalEvent] = useState(null);
-  
+  const [clipError, setClipError] = useState(false);
+  const [showLimitations, setShowLimitations] = useState(false);
+
   // Format helpers
   const formatTime = (seconds) => {
     const m = Math.floor(seconds / 60);
@@ -32,7 +34,12 @@ export default function DashboardPage() {
     setTimeout(() => setToast(null), 5000);
   };
 
-  // API Fetches
+  // Helper to detect network errors vs HTTP errors
+  const isNetworkError = (error) => {
+    return error instanceof TypeError && error.message === 'Failed to fetch';
+  };
+
+  // API Fetches — all with proper error handling
   const fetchVideos = async () => {
     try {
       const res = await fetch('http://localhost:8000/api/videos');
@@ -41,7 +48,10 @@ export default function DashboardPage() {
         setVideos(data);
       }
     } catch (e) {
-      console.error(e);
+      console.error('fetchVideos error:', e);
+      if (isNetworkError(e)) {
+        showToast('Cannot connect to server. Make sure the app is running.', 'error');
+      }
     }
   };
 
@@ -53,7 +63,10 @@ export default function DashboardPage() {
         return data;
       }
     } catch (e) {
-      console.error(e);
+      console.error('fetchVideoDetails error:', e);
+      if (isNetworkError(e)) {
+        showToast('Cannot connect to server. Make sure the app is running.', 'error');
+      }
     }
     return null;
   };
@@ -71,7 +84,10 @@ export default function DashboardPage() {
         setAlerts(alertsData);
       }
     } catch (e) {
-      console.error(e);
+      console.error('fetchEventsAndAlerts error:', e);
+      if (isNetworkError(e)) {
+        showToast('Cannot connect to server. Make sure the app is running.', 'error');
+      }
     }
   };
 
@@ -86,11 +102,42 @@ export default function DashboardPage() {
           fetchVideos(); // Refresh sidebar
         }
       } else {
-        showToast('Failed to start analysis', 'error');
+        const errData = await res.json().catch(() => ({}));
+        showToast(errData.error || 'Failed to start analysis', 'error');
       }
     } catch (e) {
-      console.error(e);
-      showToast('Error starting analysis', 'error');
+      console.error('startAnalysis error:', e);
+      if (isNetworkError(e)) {
+        showToast('Cannot connect to server. Make sure the app is running.', 'error');
+      } else {
+        showToast('Error starting analysis', 'error');
+      }
+    }
+  };
+
+  const deleteVideo = async (id) => {
+    if (!window.confirm("Are you sure you want to permanently delete this video and its alerts? This cannot be undone.")) return;
+
+    try {
+      const res = await fetch(`http://localhost:8000/api/videos/${id}`, { method: 'DELETE' });
+      if (res.ok) {
+        showToast('Video deleted successfully', 'success');
+        setSelectedVideoId(null);
+        setSelectedVideo(null);
+        setEvents([]);
+        setAlerts([]);
+        fetchVideos(); // Refresh sidebar
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        showToast(errData.error || 'Failed to delete video', 'error');
+      }
+    } catch (e) {
+      console.error('deleteVideo error:', e);
+      if (isNetworkError(e)) {
+        showToast('Cannot connect to server. Make sure the app is running.', 'error');
+      } else {
+        showToast('Failed to delete video', 'error');
+      }
     }
   };
 
@@ -134,14 +181,13 @@ export default function DashboardPage() {
         const updated = await fetchVideoDetails(vidId);
         if (updated) {
           setVideos(prev => prev.map(v => (v.video_id || v.id) === (updated.video_id || updated.id) ? updated : v));
-          
+
           if (updated.status !== 'processing') {
             setSelectedVideo(updated);
-            
+
             if (updated.status === 'done') {
               await fetchEventsAndAlerts(vidId);
-              const totalAlerts = updated.event_count || 0; // Check real alerts count later
-              showToast(`✅ Analysis complete — events detected!`, 'success');
+              showToast('Analysis complete — events detected!', 'success');
             } else if (updated.status === 'error') {
               showToast('Analysis failed', 'error');
             }
@@ -152,8 +198,29 @@ export default function DashboardPage() {
     return () => clearInterval(interval);
   }, [selectedVideo]);
 
+  // Handle "View Clip" click — check for null clip_path
+  const handleViewClip = (event) => {
+    if (!event.clip_path) {
+      showToast('Clip not yet available', 'error');
+      return;
+    }
+    setClipError(false);
+    setModalEvent(event);
+  };
+
+  // Thumbnail Placeholder component — shown when thumbnail fails to load
+  const ThumbnailPlaceholder = () => (
+    <div className="w-full h-full flex items-center justify-center bg-slate-700">
+      <svg className="w-8 h-8 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
+      </svg>
+    </div>
+  );
+
   // UI Components
   const EventCard = ({ event, isAlert }) => {
+    const [thumbFailed, setThumbFailed] = useState(false);
+
     let confidenceClass = 'bg-red-900/50 text-red-400 border-red-500/50';
     let confText = `${Math.round(event.confidence * 100)}% — verify manually`;
     if (event.confidence >= 0.8) {
@@ -167,19 +234,23 @@ export default function DashboardPage() {
     return (
       <div className={`p-4 rounded-lg bg-slate-800 border ${isAlert ? 'border-l-4 border-l-red-500 border-slate-700 shadow-[0_0_15px_rgba(239,68,68,0.1)]' : 'border-slate-700'} flex gap-4 mt-4`}>
         <div className="flex-shrink-0 w-24 h-20 bg-slate-900 rounded overflow-hidden relative">
-          <img 
-             src={`http://localhost:8000/api/thumbnails/${event.id}`} 
-             alt="Event Thumbnail" 
-             className="w-full h-full object-cover"
-             onError={(e) => { e.target.style.display = 'none'; }}
-          />
+          {thumbFailed ? (
+            <ThumbnailPlaceholder />
+          ) : (
+            <img
+              src={`http://localhost:8000/api/thumbnails/${event.id}`}
+              alt="Event Thumbnail"
+              className="w-full h-full object-cover"
+              onError={() => setThumbFailed(true)}
+            />
+          )}
         </div>
         <div className="flex-1 flex flex-col justify-between">
           <div className="flex justify-between items-start">
             <div>
               {isAlert ? (
                 <div className="text-red-500 font-bold text-sm mb-1 animate-pulse flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-red-500"></span> LOITERING ALERT
+                  <span className="w-2 h-2 rounded-full bg-red-500"></span> {event.label === 'weapon_detected' ? 'WEAPON DETECTED' : 'LOITERING ALERT'}
                 </div>
               ) : (
                 <div className="text-slate-400 text-sm mb-1 font-semibold uppercase tracking-wider">
@@ -195,14 +266,14 @@ export default function DashboardPage() {
                 </div>
               )}
             </div>
-            
+
             <div className={`px-2 py-1 text-xs border rounded-md ${confidenceClass}`} title={confText}>
               {confText}
             </div>
           </div>
           <div className="mt-2 text-right">
-            <button 
-              onClick={() => setModalEvent(event)}
+            <button
+              onClick={() => handleViewClip(event)}
               className="px-4 py-2 bg-indigo-600/20 text-indigo-400 hover:bg-indigo-600 hover:text-white rounded text-sm transition-colors font-medium border border-indigo-500/30"
             >
               View Clip
@@ -214,7 +285,7 @@ export default function DashboardPage() {
   };
 
   const getStatusBadge = (status) => {
-    switch(status) {
+    switch (status) {
       case 'done': return <span className="bg-green-900/50 text-green-400 border border-green-700/50 px-2 py-0.5 rounded text-xs ml-auto">Done</span>;
       case 'processing': return <span className="bg-indigo-900/50 text-indigo-400 border border-indigo-700/50 px-2 py-0.5 rounded text-xs ml-auto flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse"></span>Processing</span>;
       case 'error': return <span className="bg-red-900/50 text-red-400 border border-red-700/50 px-2 py-0.5 rounded text-xs ml-auto">Error</span>;
@@ -227,9 +298,8 @@ export default function DashboardPage() {
     <div className="flex flex-col min-h-screen bg-slate-900 text-slate-300 font-sans">
       {/* Toast Notification */}
       {toast && (
-        <div className={`fixed top-4 right-4 px-4 py-3 rounded-lg shadow-xl border z-50 animate-in slide-in-from-top flex items-center gap-2 ${
-          toast.type === 'success' ? 'bg-green-900 border-green-600 text-green-100' : 'bg-red-900 border-red-600 text-red-100'
-        }`}>
+        <div className={`fixed top-4 right-4 px-4 py-3 rounded-lg shadow-xl border z-50 animate-in slide-in-from-top flex items-center gap-2 ${toast.type === 'success' ? 'bg-green-900 border-green-600 text-green-100' : 'bg-red-900 border-red-600 text-red-100'
+          }`}>
           {toast.message}
         </div>
       )}
@@ -238,14 +308,14 @@ export default function DashboardPage() {
       <header className="h-16 border-b border-slate-800 bg-slate-900 flex items-center justify-between px-6 z-10 sticky top-0">
         <div className="flex items-center gap-3">
           <svg className="w-8 h-8 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
           </svg>
           <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 to-purple-400">
             SummarEye AI
           </h1>
         </div>
         <nav>
-          <Link to="/" className="text-sm font-medium text-slate-400 hover:text-white bg-slate-800/50 px-4 py-2 rounded-lg border border-slate-700 transition">
+          <Link to="/upload" className="text-sm font-medium text-slate-400 hover:text-white bg-slate-800/50 px-4 py-2 rounded-lg border border-slate-700 transition">
             Upload New Video
           </Link>
         </nav>
@@ -257,34 +327,34 @@ export default function DashboardPage() {
           <div className="p-4 border-b border-slate-700/50 bg-slate-900/50 sticky top-0">
             <h2 className="text-xs font-bold text-slate-500 uppercase tracking-wider">Footage Library</h2>
           </div>
-          
+
           {isInitialLoad ? (
-             <div className="p-4 space-y-4">
-               {[1,2,3].map(i => <div key={i} className="h-12 bg-slate-700/50 animate-pulse rounded"></div>)}
-             </div>
+            <div className="p-4 space-y-4">
+              {[1, 2, 3].map(i => <div key={i} className="h-12 bg-slate-700/50 animate-pulse rounded"></div>)}
+            </div>
           ) : (
-             <div className="flex flex-col p-2 gap-1">
-               {videos.length === 0 ? (
-                 <div className="p-4 text-sm text-slate-500 text-center">No footage uploaded yet.</div>
-               ) : (
-                 videos.map(v => {
-                   const vidId = v.video_id || v.id;
-                   return (
-                   <button 
-                     key={vidId} 
-                     onClick={() => handleSelectVideo(vidId)}
-                     className={`flex flex-col text-left p-3 rounded-lg transition-colors ${selectedVideoId === vidId ? 'bg-indigo-900/40 border border-indigo-700/50' : 'hover:bg-slate-700/50 border border-transparent'}`}
-                   >
-                     <div className="flex items-start w-full gap-2">
-                       <span className="font-medium text-sm text-slate-200 truncate flex-1" title={v.filename}>{v.filename}</span>
-                       {getStatusBadge(v.status)}
-                     </div>
-                     <span className="text-xs text-slate-500 mt-1">{new Date(v.upload_time).toLocaleDateString()}</span>
-                   </button>
-                   );
-                 })
-               )}
-             </div>
+            <div className="flex flex-col p-2 gap-1">
+              {videos.length === 0 ? (
+                <div className="p-4 text-sm text-slate-500 text-center">No footage uploaded yet.</div>
+              ) : (
+                videos.map(v => {
+                  const vidId = v.video_id || v.id;
+                  return (
+                    <button
+                      key={vidId}
+                      onClick={() => handleSelectVideo(vidId)}
+                      className={`flex flex-col text-left p-3 rounded-lg transition-colors ${selectedVideoId === vidId ? 'bg-indigo-900/40 border border-indigo-700/50' : 'hover:bg-slate-700/50 border border-transparent'}`}
+                    >
+                      <div className="flex items-start w-full gap-2">
+                        <span className="font-medium text-sm text-slate-200 truncate flex-1" title={v.filename}>{v.filename}</span>
+                        {getStatusBadge(v.status)}
+                      </div>
+                      <span className="text-xs text-slate-500 mt-1">{new Date(v.upload_time).toLocaleDateString()}</span>
+                    </button>
+                  );
+                })
+              )}
+            </div>
           )}
         </aside>
 
@@ -299,23 +369,33 @@ export default function DashboardPage() {
               <p className="text-slate-500 max-w-md">
                 Select a video from the sidebar library to view its analysis, or upload a new video to get started.
               </p>
-              <Link to="/" className="mt-6 px-6 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded font-medium transition">
+              <Link to="/upload" className="mt-6 px-6 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded font-medium transition">
                 Upload Video
               </Link>
             </div>
           ) : !selectedVideo ? (
             <div className="flex flex-col items-center justify-center h-full">
-               <div className="w-10 h-10 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
+              <div className="w-10 h-10 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
             </div>
           ) : (
             <div className="p-8 max-w-5xl mx-auto pb-24">
-              <div className="mb-8">
-                <h2 className="text-3xl font-extrabold text-white mb-2">{selectedVideo.filename}</h2>
-                <div className="flex items-center gap-4 text-sm text-slate-400">
-                  <span>Uploaded: {new Date(selectedVideo.upload_time).toLocaleString()}</span>
-                  <span>•</span>
-                  <span>ID: {(selectedVideo.video_id || selectedVideo.id || 'N/A').split('-')[0]}...</span>
+              <div className="mb-8 flex justify-between items-start">
+                <div>
+                  <h2 className="text-3xl font-extrabold text-white mb-2">{selectedVideo.filename}</h2>
+                  <div className="flex items-center gap-4 text-sm text-slate-400">
+                    <span>Uploaded: {new Date(selectedVideo.upload_time).toLocaleString()}</span>
+                    <span>•</span>
+                    <span>ID: {(selectedVideo.video_id || selectedVideo.id || 'N/A').split('-')[0]}...</span>
+                  </div>
                 </div>
+                <button
+                  onClick={() => deleteVideo(selectedVideo.video_id || selectedVideo.id)}
+                  className="px-4 py-2 border border-red-900 bg-red-900/20 text-red-400 hover:bg-red-800 hover:text-white rounded-lg transition-colors flex items-center gap-2 text-sm font-medium shadow-sm"
+                  title="Permanently delete this video"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                  Delete Video
+                </button>
               </div>
 
               {selectedVideo.status === 'pending' && (
@@ -350,7 +430,7 @@ export default function DashboardPage() {
               {selectedVideo.status === 'error' && (
                 <div className="border border-red-800 bg-red-900/20 rounded-xl p-8 text-center text-red-200">
                   <svg className="w-12 h-12 text-red-500 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
                   </svg>
                   <h3 className="text-xl font-bold text-white mb-2">Analysis Failed</h3>
                   <p className="mb-6">{selectedVideo.error_msg || 'An unknown error occurred during video processing.'}</p>
@@ -369,7 +449,7 @@ export default function DashboardPage() {
                       <div className="text-3xl font-bold text-white">{events.length}</div>
                     </div>
                     <div className="bg-slate-800/80 border border-slate-700 p-4 rounded-xl">
-                      <div className="text-sm text-slate-400 mb-1 font-medium">Loitering Alerts</div>
+                      <div className="text-sm text-slate-400 mb-1 font-medium">Critical Alerts</div>
                       <div className={`text-3xl font-bold ${alerts.length > 0 ? 'text-red-400' : 'text-slate-300'}`}>{alerts.length}</div>
                     </div>
                     <div className="bg-slate-800/80 border border-slate-700 p-4 rounded-xl">
@@ -380,21 +460,21 @@ export default function DashboardPage() {
 
                   {events.length === 0 ? (
                     <div className="border border-slate-700/50 bg-slate-800/30 rounded-xl p-16 text-center">
-                       <svg className="w-12 h-12 text-slate-600 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path>
-                       </svg>
-                       <h3 className="text-xl font-semibold text-slate-300 mb-2">No activity detected</h3>
-                       <p className="text-slate-500">The AI scanned the footage but did not detect any persons.</p>
+                      <svg className="w-12 h-12 text-slate-600 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path>
+                      </svg>
+                      <h3 className="text-xl font-semibold text-slate-300 mb-2">No activity detected</h3>
+                      <p className="text-slate-500">The AI scanned the footage but did not detect any persons.</p>
                     </div>
                   ) : (
                     <div className="space-y-8 relative">
-                      
+
                       {/* Alerts Section (Only if alerts > 0) */}
                       {alerts.length > 0 && (
                         <div>
                           <h3 className="text-lg font-bold text-red-500 mb-4 flex items-center gap-2 border-b border-red-900 pb-2">
-                             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
-                             Critical Alerts Requires Review
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                            Critical Alerts Requires Review
                           </h3>
                           <div className="flex flex-col gap-4">
                             {alerts.map(a => <EventCard key={`alert-${a.id}`} event={a} isAlert={true} />)}
@@ -405,14 +485,42 @@ export default function DashboardPage() {
                       {/* Standard Timeline container */}
                       <div>
                         {alerts.length > 0 && <h3 className="text-lg font-semibold text-white mt-8 mb-4 border-b border-slate-700 pb-2">All Activity</h3>}
-                        {/* the left vertical line using absolute positioning relative to container if we want, but simple gap list works too based on ref design. Sticking to clean stacked cards for robustness */}
                         <div className="flex flex-col gap-4 border-l-2 border-slate-700/50 pl-4 py-2 ml-4">
-                           {events.map(e => <EventCard key={`event-${e.id}`} event={e} isAlert={e.flagged} />)}
+                          {events.map(e => <EventCard key={`event-${e.id}`} event={e} isAlert={e.flagged} />)}
                         </div>
                       </div>
 
                     </div>
                   )}
+
+                  {/* About Detection Accuracy — collapsible info panel */}
+                  <div className="mt-12 border border-slate-700/50 rounded-lg overflow-hidden">
+                    <button
+                      onClick={() => setShowLimitations(!showLimitations)}
+                      className="w-full flex items-center justify-between px-4 py-3 bg-slate-800/30 hover:bg-slate-800/50 transition-colors text-left"
+                    >
+                      <div className="flex items-center gap-2 text-slate-400 text-sm">
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        </svg>
+                        <span className="font-medium">About Detection Accuracy</span>
+                      </div>
+                      <svg className={`w-4 h-4 text-slate-500 transition-transform ${showLimitations ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path>
+                      </svg>
+                    </button>
+                    {showLimitations && (
+                      <div className="px-4 py-3 bg-slate-800/10 border-t border-slate-700/50">
+                        <ul className="space-y-1.5 text-xs text-slate-500 italic">
+                          <li>Person detection: ~85–90% accuracy on clear, well-lit footage</li>
+                          <li>Accuracy reduces in low light, heavy shadows, or very small subjects</li>
+                          <li>Processing time: approximately 15–30 seconds per minute of footage</li>
+                          <li>Loitering threshold: 15 continuous minutes</li>
+                          <li>Supported formats: MP4, AVI, MOV | Max file size: 500MB</li>
+                        </ul>
+                      </div>
+                    )}
+                  </div>
 
                 </div>
               )}
@@ -421,52 +529,62 @@ export default function DashboardPage() {
         </main>
       </div>
 
-      {/* Clip Modal */}
+      {/* Clip Modal — with proper error state */}
       {modalEvent && (
-        <div 
+        <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-sm p-4 animate-in fade-in"
           onClick={(e) => {
             if (e.target === e.currentTarget) setModalEvent(null);
           }}
         >
           <div className="bg-slate-900 border border-slate-700 rounded-xl max-w-4xl w-full shadow-2xl relative overflow-hidden">
-            <button 
+            <button
               className="absolute top-4 right-4 z-10 w-8 h-8 flex items-center justify-center bg-black/50 hover:bg-red-500 rounded-full text-white transition-colors"
               onClick={() => setModalEvent(null)}
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
             </button>
-            
+
             <div className="bg-black aspect-video w-full flex items-center justify-center relative">
-              <video 
-                src={`http://localhost:8000/api/clips/${modalEvent.id}`} 
-                controls 
-                autoPlay 
-                className="w-full h-full object-contain"
-                onError={(e) => { e.target.outerHTML = "<div class='text-red-500 p-8'>Clip could not be loaded</div>" }}
-              />
+              {clipError ? (
+                <div className="flex flex-col items-center gap-3 text-slate-400">
+                  <svg className="w-12 h-12 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
+                  </svg>
+                  <p className="text-lg font-medium">Clip unavailable</p>
+                  <p className="text-sm text-slate-500">The video clip could not be loaded.</p>
+                </div>
+              ) : (
+                <video
+                  src={`http://localhost:8000/api/clips/${modalEvent.id}`}
+                  controls
+                  autoPlay
+                  className="w-full h-full object-contain"
+                  onError={() => setClipError(true)}
+                />
+              )}
             </div>
-            
+
             <div className="p-6 border-t border-slate-800">
-               <div className="flex justify-between items-start">
-                  <div>
-                    {modalEvent.flagged ? (
-                      <h4 className="text-xl font-bold text-red-500 mb-1 flex items-center gap-2">
-                        <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse"></span> Loitering Alert Recorded
-                      </h4>
-                    ) : (
-                      <h4 className="text-xl font-semibold text-white mb-1">Person Detected</h4>
-                    )}
-                    <div className="text-slate-400">
-                      Timestamp: <span className="font-semibold text-slate-200">at {formatTime(modalEvent.start_time)}</span> 
-                      {modalEvent.duration_s && `  •  Duration: ${formatMinutes(modalEvent.duration_s)}m ${Math.floor(modalEvent.duration_s % 60)}s`}
-                    </div>
+              <div className="flex justify-between items-start">
+                <div>
+                  {modalEvent.flagged ? (
+                    <h4 className="text-xl font-bold text-red-500 mb-1 flex items-center gap-2">
+                      <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse"></span> {modalEvent.label === 'weapon_detected' ? 'Weapon Alert Recorded' : 'Loitering Alert Recorded'}
+                    </h4>
+                  ) : (
+                    <h4 className="text-xl font-semibold text-white mb-1">Person Detected</h4>
+                  )}
+                  <div className="text-slate-400">
+                    Timestamp: <span className="font-semibold text-slate-200">at {formatTime(modalEvent.start_time)}</span>
+                    {modalEvent.duration_s && `  •  Duration: ${formatMinutes(modalEvent.duration_s)}m ${Math.floor(modalEvent.duration_s % 60)}s`}
                   </div>
-                  <div className="text-right">
-                    <div className="text-sm text-slate-500 mb-1">AI Confidence</div>
-                    <div className="text-lg font-mono font-bold text-indigo-400">{Math.round(modalEvent.confidence * 100)}%</div>
-                  </div>
-               </div>
+                </div>
+                <div className="text-right">
+                  <div className="text-sm text-slate-500 mb-1">AI Confidence</div>
+                  <div className="text-lg font-mono font-bold text-indigo-400">{Math.round(modalEvent.confidence * 100)}%</div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
