@@ -1,9 +1,10 @@
 import logging
 import traceback
-from fastapi import FastAPI, File, UploadFile, Depends, BackgroundTasks, Request
+from fastapi import FastAPI, File, UploadFile, Depends, BackgroundTasks, Request, Form, HTTPException, status
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from database import init_db, get_db, Video, Event
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from database import init_db, get_db, Video, Event, TrackingEvent, User
 from sqlalchemy.orm import Session
 from detection import start_video_processing
 from sqlalchemy import func
@@ -11,7 +12,55 @@ from datetime import datetime, timedelta
 import os
 import uuid
 import aiofiles
+import json
+from pydantic import BaseModel
+from typing import Optional, Dict, Any
 
+from passlib.context import CryptContext
+import jwt
+
+class TrackEventReq(BaseModel):
+    event_name: str
+    metadata_obj: Optional[Dict[str, Any]] = None
+
+class RegisterReq(BaseModel):
+    username: str
+    email: str
+    password: str
+
+class LoginReq(BaseModel):
+    email: str
+    password: str
+
+SECRET_KEY = "super-secret-key-for-mvp"
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+security = HTTPBearer()
+
+def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security), db: Session = Depends(get_db)):
+    token = credentials.credentials
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id: str = payload.get("sub")
+        if user_id is None:
+            raise credentials_exception
+    except jwt.PyJWTError:
+        raise credentials_exception
+    user = db.query(User).filter(User.id == user_id).first()
+    if user is None:
+        raise credentials_exception
+    
+    # Update last active timestamp
+    user.last_active_at = datetime.utcnow()
+    db.commit()
+    return user
 # Configure logging — always log server-side, never expose to frontend
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("summareye")
@@ -49,29 +98,34 @@ def health_check():
     return {"status": "ok", "version": "1.0.0"}
 
 @app.get("/api/analytics")
-def get_analytics(db: Session = Depends(get_db)):
+def get_analytics(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Global analytics endpoint — aggregate stats across all videos and events."""
-    # Total counts
-    total_videos = db.query(func.count(Video.id)).scalar() or 0
-    total_events = db.query(func.count(Event.id)).scalar() or 0
-    total_alerts = db.query(func.count(Event.id)).filter(Event.flagged == True).scalar() or 0
-    total_footage_s = db.query(func.sum(Video.duration_s)).filter(Video.duration_s != None).scalar() or 0.0
-    avg_confidence = db.query(func.avg(Event.confidence)).scalar() or 0.0
+    # Note: Currently showing global analytics for MVP, but could restrict to user.
+    # To restrict: filter(Video.user_id == current_user.id)
+    # Let's restrict it to the current user's videos for privacy.
+    
+    user_videos = db.query(Video).filter(Video.user_id == current_user.id).subquery()
+    
+    total_videos = db.query(func.count(Video.id)).filter(Video.user_id == current_user.id).scalar() or 0
+    total_events = db.query(func.count(Event.id)).join(Video, Event.video_id == Video.id).filter(Video.user_id == current_user.id).scalar() or 0
+    total_alerts = db.query(func.count(Event.id)).join(Video, Event.video_id == Video.id).filter(Video.user_id == current_user.id, Event.flagged == True).scalar() or 0
+    total_footage_s = db.query(func.sum(Video.duration_s)).filter(Video.user_id == current_user.id, Video.duration_s != None).scalar() or 0.0
+    avg_confidence = db.query(func.avg(Event.confidence)).join(Video, Event.video_id == Video.id).filter(Video.user_id == current_user.id).scalar() or 0.0
 
     # Status breakdown
-    status_counts = db.query(Video.status, func.count(Video.id)).group_by(Video.status).all()
+    status_counts = db.query(Video.status, func.count(Video.id)).filter(Video.user_id == current_user.id).group_by(Video.status).all()
     status_breakdown = {s: c for s, c in status_counts}
 
     # Label breakdown
-    label_counts = db.query(Event.label, func.count(Event.id)).group_by(Event.label).all()
+    label_counts = db.query(Event.label, func.count(Event.id)).join(Video, Event.video_id == Video.id).filter(Video.user_id == current_user.id).group_by(Event.label).all()
     label_breakdown = {l: c for l, c in label_counts}
 
-    # Daily alerts (last 30 days)
+    # Daily alerts
     thirty_days_ago = datetime.utcnow() - timedelta(days=30)
-    daily_alerts = []
     all_events_recent = (
         db.query(Event)
-        .filter(Event.created_at >= thirty_days_ago)
+        .join(Video, Event.video_id == Video.id)
+        .filter(Video.user_id == current_user.id, Event.created_at >= thirty_days_ago)
         .order_by(Event.created_at.asc())
         .all()
     )
@@ -88,11 +142,11 @@ def get_analytics(db: Session = Depends(get_db)):
 
     daily_alerts = sorted(date_map.values(), key=lambda x: x["date"])
 
-    # Recent alerts (last 10 flagged events)
+    # Recent alerts
     recent_alert_records = (
         db.query(Event, Video.filename)
         .join(Video, Event.video_id == Video.id)
-        .filter(Event.flagged == True)
+        .filter(Video.user_id == current_user.id, Event.flagged == True)
         .order_by(Event.created_at.desc())
         .limit(10)
         .all()
@@ -121,8 +175,45 @@ def get_analytics(db: Session = Depends(get_db)):
         "recent_alerts": recent_alerts,
     }
 
+@app.post("/api/auth/register")
+def register(req: RegisterReq, db: Session = Depends(get_db)):
+    if db.query(User).filter(User.email == req.email).first():
+        return JSONResponse(status_code=400, content={"error": "Email already registered", "code": "EMAIL_TAKEN"})
+    if db.query(User).filter(User.username == req.username).first():
+        return JSONResponse(status_code=400, content={"error": "Username already taken", "code": "USERNAME_TAKEN"})
+    
+    hashed_pw = pwd_context.hash(req.password)
+    user = User(username=req.username, email=req.email, password_hash=hashed_pw)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    
+    token = jwt.encode({"sub": user.id, "exp": datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)}, SECRET_KEY, algorithm=ALGORITHM)
+    return {"token": token, "user": {"id": user.id, "username": user.username, "email": user.email}}
+
+@app.post("/api/auth/login")
+def login(req: LoginReq, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.email == req.email).first()
+    if not user or not pwd_context.verify(req.password, user.password_hash):
+        return JSONResponse(status_code=401, content={"error": "Invalid email or password", "code": "AUTH_FAILED"})
+    
+    token = jwt.encode({"sub": user.id, "exp": datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)}, SECRET_KEY, algorithm=ALGORITHM)
+    return {"token": token, "user": {"id": user.id, "username": user.username, "email": user.email}}
+
+@app.post("/api/track", status_code=201)
+def track_event(req: TrackEventReq, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Log a PMF event directly into TrackingEvent table."""
+    new_event = TrackingEvent(
+        user_id=current_user.id,
+        event_name=req.event_name,
+        metadata_json=json.dumps(req.metadata_obj) if req.metadata_obj else None
+    )
+    db.add(new_event)
+    db.commit()
+    return {"status": "ok"}
+
 @app.post("/api/upload", status_code=201)
-async def upload_video(video: UploadFile = File(...), db: Session = Depends(get_db)):
+async def upload_video(video: UploadFile = File(...), current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Upload a video file. Returns 201 on success, 422 on validation error."""
     # Validate file extension
     ext = os.path.splitext(video.filename)[1].lower()
@@ -168,11 +259,20 @@ async def upload_video(video: UploadFile = File(...), db: Session = Depends(get_
     # Save record to database
     new_video = Video(
         id=video_id,
+        user_id=current_user.id,
         filename=video.filename,
         filepath=filepath,
         status="pending"
     )
     db.add(new_video)
+    
+    track = TrackingEvent(
+        user_id=current_user.id, 
+        event_name="video_uploaded", 
+        metadata_json=json.dumps({"video_id": new_video.id, "filename": new_video.filename})
+    )
+    db.add(track)
+
     db.commit()
     db.refresh(new_video)
 
@@ -187,9 +287,9 @@ async def upload_video(video: UploadFile = File(...), db: Session = Depends(get_
     }
 
 @app.get("/api/videos/{video_id}")
-def get_video(video_id: str, db: Session = Depends(get_db)):
+def get_video(video_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Get a single video by ID. Returns 404 if not found."""
-    video = db.query(Video).filter(Video.id == video_id).first()
+    video = db.query(Video).filter(Video.id == video_id, Video.user_id == current_user.id).first()
     if not video:
         return JSONResponse(
             status_code=404,
@@ -206,10 +306,10 @@ def get_video(video_id: str, db: Session = Depends(get_db)):
     }
 
 @app.delete("/api/videos/{video_id}")
-def delete_video(video_id: str, db: Session = Depends(get_db)):
+def delete_video(video_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Delete a video, its events, and associated files from disk."""
     import shutil
-    video = db.query(Video).filter(Video.id == video_id).first()
+    video = db.query(Video).filter(Video.id == video_id, Video.user_id == current_user.id).first()
     if not video:
         return JSONResponse(
             status_code=404,
@@ -236,15 +336,19 @@ def delete_video(video_id: str, db: Session = Depends(get_db)):
             
     # Delete from DB entirely
     db.delete(video)
+    
+    track = TrackingEvent(user_id=current_user.id, event_name="video_deleted", metadata_json=json.dumps({"video_id": video_id}))
+    db.add(track)
+
     db.commit()
     logger.info(f"Video {video_id} safely deleted from DB and filesystem.")
     
     return {"status": "success", "message": "Video successfully deleted."}
 
 @app.get("/api/videos")
-def list_videos(db: Session = Depends(get_db)):
+def list_videos(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """List all videos, ordered by most recent upload first."""
-    videos = db.query(Video).order_by(Video.upload_time.desc()).all()
+    videos = db.query(Video).filter(Video.user_id == current_user.id).order_by(Video.upload_time.desc()).all()
     return [
         {
             "video_id": v.id,
@@ -256,9 +360,9 @@ def list_videos(db: Session = Depends(get_db)):
     ]
 
 @app.post("/api/analyse/{id}", status_code=202)
-def analyse_video(id: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+def analyse_video(id: str, background_tasks: BackgroundTasks, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Trigger async video analysis. Returns 202 accepted, 404 not found, 409 conflict."""
-    video = db.query(Video).filter(Video.id == id).first()
+    video = db.query(Video).filter(Video.id == id, Video.user_id == current_user.id).first()
     if not video:
         return JSONResponse(
             status_code=404,
@@ -273,13 +377,18 @@ def analyse_video(id: str, background_tasks: BackgroundTasks, db: Session = Depe
         )
 
     logger.info(f"Analysis triggered for video {id}")
+    
+    track = TrackingEvent(user_id=video.user_id, event_name="processing_started", metadata_json=json.dumps({"video_id": id}))
+    db.add(track)
+    db.commit()
+
     background_tasks.add_task(start_video_processing, id)
     return {"message": "Analysis started", "video_id": id}
 
 @app.get("/api/videos/{id}/events")
-def get_video_events(id: str, db: Session = Depends(get_db)):
+def get_video_events(id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Get all events for a video. Returns 404 if video doesn't exist."""
-    video = db.query(Video).filter(Video.id == id).first()
+    video = db.query(Video).filter(Video.id == id, Video.user_id == current_user.id).first()
     if not video:
         return JSONResponse(
             status_code=404,
@@ -289,9 +398,9 @@ def get_video_events(id: str, db: Session = Depends(get_db)):
     return events
 
 @app.get("/api/videos/{id}/alerts")
-def get_video_alerts(id: str, db: Session = Depends(get_db)):
+def get_video_alerts(id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Get flagged (loitering) events for a video. Returns 404 if video doesn't exist."""
-    video = db.query(Video).filter(Video.id == id).first()
+    video = db.query(Video).filter(Video.id == id, Video.user_id == current_user.id).first()
     if not video:
         return JSONResponse(
             status_code=404,

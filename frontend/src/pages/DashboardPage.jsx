@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
 import Navbar from '../components/Navbar';
 import NeuralNetworkAnimation from '../components/NeuralNetworkAnimation';
+import { trackEvent } from '../utils/tracker';
 
 export default function DashboardPage() {
   const [searchParams] = useSearchParams();
@@ -44,7 +45,10 @@ export default function DashboardPage() {
   // API Fetches
   const fetchVideos = async () => {
     try {
-      const res = await fetch('http://localhost:8000/api/videos');
+      const token = localStorage.getItem('summareye_token');
+      const res = await fetch('/api/videos', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
       if (res.ok) {
         const data = await res.json();
         setVideos(data);
@@ -59,7 +63,10 @@ export default function DashboardPage() {
 
   const fetchVideoDetails = async (id) => {
     try {
-      const res = await fetch(`http://localhost:8000/api/videos/${id}`);
+      const token = localStorage.getItem('summareye_token');
+      const res = await fetch(`/api/videos/${id}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
       if (res.ok) {
         const data = await res.json();
         return data;
@@ -75,9 +82,10 @@ export default function DashboardPage() {
 
   const fetchEventsAndAlerts = async (id) => {
     try {
+      const token = localStorage.getItem('summareye_token');
       const [eventsRes, alertsRes] = await Promise.all([
-        fetch(`http://localhost:8000/api/videos/${id}/events`),
-        fetch(`http://localhost:8000/api/videos/${id}/alerts`)
+        fetch(`/api/videos/${id}/events`, { headers: { 'Authorization': `Bearer ${token}` } }),
+        fetch(`/api/videos/${id}/alerts`, { headers: { 'Authorization': `Bearer ${token}` } })
       ]);
       if (eventsRes.ok && alertsRes.ok) {
         const eventsData = await eventsRes.json();
@@ -95,7 +103,11 @@ export default function DashboardPage() {
 
   const startAnalysis = async (id) => {
     try {
-      const res = await fetch(`http://localhost:8000/api/analyse/${id}`, { method: 'POST' });
+      const token = localStorage.getItem('summareye_token');
+      const res = await fetch(`/api/analyse/${id}`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
       if (res.ok) {
         showToast('> Analysis pipeline initiated', 'success');
         const updatedVideo = await fetchVideoDetails(id);
@@ -121,7 +133,11 @@ export default function DashboardPage() {
     if (!window.confirm("CONFIRM: Permanently delete this video and all its analysis data?")) return;
 
     try {
-      const res = await fetch(`http://localhost:8000/api/videos/${id}`, { method: 'DELETE' });
+      const token = localStorage.getItem('summareye_token');
+      const res = await fetch(`/api/videos/${id}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
       if (res.ok) {
         showToast('> Video purged from system', 'success');
         setSelectedVideoId(null);
@@ -168,6 +184,7 @@ export default function DashboardPage() {
     setSelectedVideo(detail);
     if (detail && detail.status === 'done') {
       await fetchEventsAndAlerts(id);
+      trackEvent('result_viewed', { video_id: id });
     } else {
       setEvents([]);
       setAlerts([]);
@@ -206,6 +223,7 @@ export default function DashboardPage() {
       showToast('Clip not yet available', 'error');
       return;
     }
+    trackEvent('clip_viewed', { event_id: event.id, label: event.label });
     setClipError(false);
     setModalEvent(event);
   };
@@ -241,7 +259,7 @@ export default function DashboardPage() {
             <ThumbnailPlaceholder />
           ) : (
             <img
-              src={`http://localhost:8000/api/thumbnails/${event.id}`}
+              src={`/api/thumbnails/${event.id}`}
               alt="Event Thumbnail"
               className="w-full h-full object-cover"
               onError={() => setThumbFailed(true)}
@@ -306,11 +324,10 @@ export default function DashboardPage() {
 
       {/* Toast Notification */}
       {toast && (
-        <div className={`fixed top-16 right-4 px-4 py-3 rounded border z-50 text-xs font-mono ${
-          toast.type === 'success'
+        <div className={`fixed top-16 right-4 px-4 py-3 rounded border z-50 text-xs font-mono ${toast.type === 'success'
             ? 'bg-black border-neon-green text-neon-green glow-green'
             : 'bg-black border-hacker-red text-hacker-red glow-red'
-        }`}>
+          }`}>
           {toast.message}
         </div>
       )}
@@ -337,11 +354,10 @@ export default function DashboardPage() {
                     <button
                       key={vidId}
                       onClick={() => handleSelectVideo(vidId)}
-                      className={`flex flex-col text-left p-3 rounded transition-colors ${
-                        selectedVideoId === vidId
+                      className={`flex flex-col text-left p-3 rounded transition-colors ${selectedVideoId === vidId
                           ? 'bg-neon-dark/30 border border-neon-green glow-green'
                           : 'hover:bg-neon-dark/10 border border-transparent'
-                      }`}
+                        }`}
                     >
                       <div className="flex items-start w-full gap-2">
                         <span className="font-medium text-xs text-neon-green truncate flex-1" title={v.filename}>{v.filename}</span>
@@ -546,7 +562,7 @@ export default function DashboardPage() {
                 </div>
               ) : (
                 <video
-                  src={`http://localhost:8000/api/clips/${modalEvent.id}`}
+                  src={`/api/clips/${modalEvent.id}`}
                   controls
                   autoPlay
                   className="w-full h-full object-contain"

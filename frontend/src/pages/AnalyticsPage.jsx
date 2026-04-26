@@ -13,7 +13,10 @@ export default function AnalyticsPage() {
   useEffect(() => {
     const fetchAnalytics = async () => {
       try {
-        const res = await fetch('http://localhost:8000/api/analytics');
+        const token = localStorage.getItem('summareye_token');
+        const res = await fetch('/api/analytics', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
         if (!res.ok) throw new Error('Failed to fetch analytics');
         const json = await res.json();
         setData(json);

@@ -57,17 +57,11 @@ SummarEye-ai/
 
 ## Scope Limits — NEVER build these
 - No live RTSP camera streaming
-- No user authentication or login
 - No cloud storage or S3
-- No email or SMS notifications
-- No mobile app
 - No weapon or vehicle detection (MVP only has person detection)
-- No Docker, Kubernetes, or deployment pipelines
-- No multi-user or team features
 
 
 ## Testing & Verification
 - After each module, open the browser preview and verify the user flow works.
 - Use sample_videos/demo_clip.mp4 as the default test video.
 - All endpoints must return correct HTTP status codes (200/201/400/422/500).
-

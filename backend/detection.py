@@ -2,9 +2,10 @@ import cv2
 import os
 import uuid
 import logging
+import json
 from ultralytics import YOLO
 from sqlalchemy.orm import Session
-from database import Video, Event, SessionLocal
+from database import Video, Event, TrackingEvent, SessionLocal
 
 # Logger for detection pipeline — logs server-side only
 logger = logging.getLogger("summareye.detection")
@@ -259,6 +260,15 @@ def process_video(video_id: str, db: Session):
         # Mark video as complete
         video.status = "done"
         video.event_count = len(events_data)
+        
+        if video.user_id:
+            track = TrackingEvent(
+                user_id=video.user_id, 
+                event_name="processing_completed", 
+                metadata_json=json.dumps({"video_id": video_id, "event_count": len(events_data), "duration_s": video.duration_s})
+            )
+            db.add(track)
+
         db.commit()
         logger.info(f"[{video_id}] Processing complete. {len(events_data)} events saved.")
 
@@ -267,4 +277,13 @@ def process_video(video_id: str, db: Session):
         logger.error(f"[{video_id}] Processing failed: {exc}")
         video.status = "error"
         video.error_msg = str(exc)
+        
+        if video.user_id:
+            track = TrackingEvent(
+                user_id=video.user_id, 
+                event_name="error_occurred", 
+                metadata_json=json.dumps({"video_id": video_id, "error": str(exc), "stage": "processing"})
+            )
+            db.add(track)
+
         db.commit()

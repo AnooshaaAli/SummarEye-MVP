@@ -1,6 +1,7 @@
 import { useState, useRef } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import Navbar from '../components/Navbar';
+import { trackEvent } from '../utils/tracker';
 
 export default function UploadPage() {
   const [file, setFile] = useState(null);
@@ -68,10 +69,15 @@ export default function UploadPage() {
 
     const formData = new FormData();
     formData.append('video', file);
+    trackEvent('video_upload_started', { filename: file.name, size: Math.round(file.size/1024/1024*100)/100 });
 
     try {
-      const response = await fetch('http://localhost:8000/api/upload', {
+      const token = localStorage.getItem('summareye_token');
+      const response = await fetch('/api/upload', {
         method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        },
         body: formData,
       });
 
@@ -86,8 +92,10 @@ export default function UploadPage() {
     } catch (err) {
       if (err instanceof TypeError && err.message === 'Failed to fetch') {
         setError('CONNECTION_REFUSED: Backend unreachable. Is the server running?');
+        trackEvent('error_occurred', { stage: 'upload', error: 'CONNECTION_REFUSED' });
       } else {
         setError(err.message || 'UNKNOWN_ERROR: An unexpected error occurred.');
+        trackEvent('error_occurred', { stage: 'upload', error: err.message });
       }
     } finally {
       setIsUploading(false);

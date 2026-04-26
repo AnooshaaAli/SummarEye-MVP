@@ -1,8 +1,10 @@
 import { Link, useLocation } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
 import NotificationBell from './NotificationBell';
 
 export default function Navbar() {
   const location = useLocation();
+  const { user, logout } = useAuth();
 
   // Helper to check if current path matches
   const isActive = (path) => location.pathname === path;
@@ -42,9 +44,27 @@ export default function Navbar() {
             </div>
           </div>
 
-          {/* Right — Notification Bell */}
+          {/* Right — Metrics/Icons */}
           <div className="flex items-center gap-4">
-            <NotificationBell />
+            {user && (
+              <>
+                <NotificationBell />
+                <div className="flex items-center gap-3">
+                  <span className="text-xs text-neon-green font-bold">@{user.username}</span>
+                  <button 
+                    onClick={logout}
+                    className="text-[10px] uppercase tracking-widest text-neon-dim hover:text-hacker-red transition-colors border border-transparent hover:border-hacker-red px-2 py-1 rounded"
+                  >
+                    Logout
+                  </button>
+                </div>
+              </>
+            )}
+            {!user && (
+              <Link to="/login" className="text-xs text-neon-green hover:text-white transition-colors border border-neon-green px-3 py-1 rounded">
+                Login
+              </Link>
+            )}
           </div>
         </div>
       </div>

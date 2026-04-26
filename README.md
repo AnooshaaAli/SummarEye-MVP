@@ -8,6 +8,20 @@ SummarEye AI is a web application that analyzes uploaded CCTV footage using AI (
 - **AI/Detection**: YOLOv8n via Ultralytics
 - **Video Processing**: OpenCV (cv2)
 
+## Quick Start (Run the App)
+
+Open two separate terminals in the project root:
+
+**Terminal 1 (Backend):**
+```bash
+cd backend && ..\venv\Scripts\activate && uvicorn main:app --port 8001 --reload
+```
+
+**Terminal 2 (Frontend):**
+```bash
+cd frontend && npm run dev
+```
+
 ## Setup Instructions
 
 ### 1. Requirements
